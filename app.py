@@ -359,8 +359,15 @@ def grid_search_models(
         return combo_results
 
     # --- Ejecución paralela ---
-    parallel_results = Parallel(n_jobs=n_jobs, backend="loky", verbose=0)(
-        delayed(evaluate_combo)(p, d, q, D) for (p, d, q, D) in combos
+   import os
+	is_cloud = os.environ.get("STREAMLIT_RUNTIME", None) is not None
+
+	if is_cloud:
+   		st.info("⚙️ Ejecutando en modo seguro (sin paralelización, compatible con Streamlit Cloud)...")
+    		parallel_results = [evaluate_combo(p, d, q, D) for (p, d, q, D) in combos]
+	else:
+    		parallel_results = Parallel(n_jobs=n_jobs, backend="loky", verbose=0)(
+        	delayed(evaluate_combo)(p, d, q, D) for (p, d, q, D) in combos
     )
 
     # --- Consolidar resultados ---
