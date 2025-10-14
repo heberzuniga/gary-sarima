@@ -277,97 +277,124 @@ def auto_select_exog_and_lags(
 # ============================
 # Grid search
 # ============================
+from joblib import Parallel, delayed
+from functools import lru_cache
 
-def grid_search_models(train: pd.Series, test: pd.Series,
-                       seasonal_period=12, max_pq=3,
-                       exog_train: Optional[pd.DataFrame]=None,
-                       exog_test:  Optional[pd.DataFrame]=None,
-                       include_fourier=True, K_fourier=(1,2,3),
-                       mape_threshold=None, enforce_threshold=False) -> Dict[str, Any]:
-    results = []
+def grid_search_models(
+    train: pd.Series,
+    test: pd.Series,
+    seasonal_period=12,
+    max_pq=3,
+    exog_train: Optional[pd.DataFrame] = None,
+    exog_test: Optional[pd.DataFrame] = None,
+    include_fourier=True,
+    K_fourier=(1, 2),
+    mape_threshold=None,
+    enforce_threshold=False,
+    n_jobs=-1
+) -> Dict[str, Any]:
+    """Optimized grid search for ARIMA/SARIMA/SARIMAX models (parallelized, early-stopping)."""
+    
     d = select_differencing(train)
+    results = []
 
-    # ARIMA
-    for p in range(0, max_pq+1):
-        for q in range(0, max_pq+1):
-            try:
-                res = fit_sarimax(train, order=(p,d,q))
-                fc = res.get_forecast(steps=len(test)).predicted_mean
-                fc.index = test.index
-                diag = diagnostics(res)
-                results.append(record_result("ARIMA", (p,d,q), (0,0,0,0), None, test, fc, diag, res.aic))
-            except Exception: continue
+    @lru_cache(maxsize=None)
+    def fit_cached(order, seasonal_order, use_exog: bool, k: Optional[int]):
+        try:
+            Xtr = exog_train if use_exog and exog_train is not None else None
+            Xte = exog_test if use_exog and exog_test is not None else None
+            if k is not None:
+                ft_tr = fourier_terms(train.index, period=seasonal_period, K=k)
+                ft_te = fourier_terms(test.index,  period=seasonal_period, K=k)
+                Xtr = ft_tr if Xtr is None else pd.concat([Xtr, ft_tr], axis=1)
+                Xte = ft_te if Xte is None else pd.concat([Xte, ft_te], axis=1)
+            res = fit_sarimax(train, order=order, seasonal_order=seasonal_order, exog=Xtr)
+            fc = res.get_forecast(steps=len(test), exog=Xte).predicted_mean
+            fc.index = test.index
+            diag = diagnostics(res)
+            return record_result(
+                "SARIMAX" if use_exog else "SARIMA",
+                order, seasonal_order,
+                f"exog={use_exog}, K={k}",
+                test, fc, diag, res.aic,
+                extra={"fourier_k": k, "exog_cols": list(exog_train.columns) if use_exog and exog_train is not None else []}
+            )
+        except Exception:
+            return None
 
-    # SARIMA
-    for p in range(0, max_pq+1):
-        for q in range(0, max_pq+1):
-            for D in [0,1]:
-                try:
-                    res = fit_sarimax(train, order=(p,d,q), seasonal_order=(p, D, q, seasonal_period))
-                    fc = res.get_forecast(steps=len(test)).predicted_mean; fc.index = test.index
-                    diag = diagnostics(res)
-                    results.append(record_result("SARIMA", (p,d,q), (p,D,q,seasonal_period), None, test, fc, diag, res.aic))
-                except Exception: continue
+    # --- Generación de combinaciones posibles ---
+    combos = []
+    for p in range(0, max_pq + 1):
+        for q in range(0, max_pq + 1):
+            for D in [0, 1]:
+                combos.append((p, d, q, D))
 
-    # SARIMAX con exógenas
-    if exog_train is not None and exog_test is not None and exog_train.shape[1] > 0:
-        for p in range(0, max_pq+1):
-            for q in range(0, max_pq+1):
-                for D in [0,1]:
-                    try:
-                        res = fit_sarimax(train, order=(p,d,q), seasonal_order=(p,D,q,seasonal_period), exog=exog_train)
-                        fc = res.get_forecast(steps=len(test), exog=exog_test).predicted_mean; fc.index = test.index
-                        diag = diagnostics(res)
-                        results.append(record_result("SARIMAX(exog)", (p,d,q), (p,D,q,seasonal_period),
-                                                     f"exog={list(exog_train.columns)}", test, fc, diag, res.aic,
-                                                     extra={"exog_cols": list(exog_train.columns), "fourier_k": None}))
-                    except Exception: continue
+    # --- Función auxiliar (con early-stop lógico) ---
+    def evaluate_combo(p, d, q, D):
+        combo_results = []
+        seasonal_order = (p, D, q, seasonal_period)
+        order = (p, d, q)
 
-    # SARIMAX con Fourier (y exógenas si existen)
-    if include_fourier:
-        for K in K_fourier:
-            ft_train = fourier_terms(train.index, period=seasonal_period, K=K)
-            ft_test  = fourier_terms(test.index,  period=seasonal_period, K=K)
-            if exog_train is not None and exog_test is not None and exog_train.shape[1] > 0:
-                Xtr = pd.concat([exog_train, ft_train], axis=1)
-                Xte = pd.concat([exog_test,  ft_test], axis=1)
-                tag = f"exog+K={K}"
-            else:
-                Xtr, Xte = ft_train, ft_test; tag = f"K={K}"
-            for p in range(0, max_pq+1):
-                for q in range(0, max_pq+1):
-                    for D in [0,1]:
-                        try:
-                            res = fit_sarimax(train, order=(p,d,q), seasonal_order=(p,D,q,seasonal_period), exog=Xtr)
-                            fc = res.get_forecast(steps=len(test), exog=Xte).predicted_mean; fc.index = test.index
-                            diag = diagnostics(res)
-                            results.append(record_result(f"SARIMAX({tag})", (p,d,q), (p,D,q,seasonal_period),
-                                                         f"{'exog+' if 'exog' in tag else ''}Fourier K={K}", test, fc, diag, res.aic,
-                                                         extra={"exog_cols": list(exog_train.columns) if exog_train is not None else [],
-                                                                "fourier_k": int(K)}))
-                        except Exception: continue
+        # Sin exógenas ni Fourier
+        r1 = fit_cached(order, seasonal_order, False, None)
+        if r1: combo_results.append(r1)
+
+        # Con exógenas si existen
+        if exog_train is not None and exog_train.shape[1] > 0:
+            r2 = fit_cached(order, seasonal_order, True, None)
+            if r2: combo_results.append(r2)
+
+        # Con Fourier o Fourier+Exógenas
+        if include_fourier:
+            for k in K_fourier:
+                r3 = fit_cached(order, seasonal_order, False, k)
+                if r3: combo_results.append(r3)
+                if exog_train is not None and exog_train.shape[1] > 0:
+                    r4 = fit_cached(order, seasonal_order, True, k)
+                    if r4: combo_results.append(r4)
+
+        # --- Early stopping: si todos los MAPE > 30% se omite rama ---
+        if all([r["mape"] > 30 for r in combo_results if r is not None]):
+            return []
+        return combo_results
+
+    # --- Ejecución paralela ---
+    parallel_results = Parallel(n_jobs=n_jobs, backend="loky", verbose=0)(
+        delayed(evaluate_combo)(p, d, q, D) for (p, d, q, D) in combos
+    )
+
+    # --- Consolidar resultados ---
+    for rset in parallel_results:
+        results.extend([r for r in rset if r is not None])
+
+    if len(results) == 0:
+        return {"summary": pd.DataFrame(), "best": None}
 
     df = pd.DataFrame(results)
-    if len(df)==0: return {"summary": pd.DataFrame(), "best": None}
-
-    df["passes_all"] = df[["jb_p","lb_p","arch_p"]].ge(0.05).all(axis=1)
-    df["passes_count"] = df[["jb_p","lb_p","arch_p"]].ge(0.05).sum(axis=1)
+    df["passes_all"] = df[["jb_p", "lb_p", "arch_p"]].ge(0.05).all(axis=1)
+    df["passes_count"] = df[["jb_p", "lb_p", "arch_p"]].ge(0.05).sum(axis=1)
     df["meets_thresh"] = df["mape"] <= (mape_threshold if mape_threshold is not None else np.inf)
 
+    # --- Selección del mejor modelo ---
     if mape_threshold is not None:
-        diag_and_thr = df[df["passes_all"] & df["meets_thresh"]]
-        if len(diag_and_thr)>0:
-            best_row = diag_and_thr.sort_values(["mape","aic"]).iloc[0].to_dict()
+        valid = df[df["passes_all"] & df["meets_thresh"]]
+        if len(valid) > 0:
+            best_row = valid.sort_values(["mape", "aic"]).iloc[0].to_dict()
         else:
-            # fallback ordenado
-            best_row = df.sort_values(["passes_all","passes_count","mape","aic"], ascending=[False,False,True,True]).iloc[0].to_dict()
+            best_row = df.sort_values(["passes_all", "passes_count", "mape", "aic"],
+                                      ascending=[False, False, True, True]).iloc[0].to_dict()
             if df["meets_thresh"].any() and not best_row["meets_thresh"]:
                 best_row["_note"] = "No hubo modelos que cumplan el MAPE objetivo; se muestra el mejor compromiso."
     else:
-        best_row = df.sort_values(["passes_all","passes_count","mape","aic"], ascending=[False,False,True,True]).iloc[0].to_dict()
+        best_row = df.sort_values(["passes_all", "passes_count", "mape", "aic"],
+                                  ascending=[False, False, True, True]).iloc[0].to_dict()
 
-    return {"summary": df.sort_values(["passes_all","passes_count","mape","aic"], ascending=[False,False,True,True]),
-            "best": best_row}
+    return {
+        "summary": df.sort_values(["passes_all", "passes_count", "mape", "aic"],
+                                  ascending=[False, False, True, True]),
+        "best": best_row
+    }
+
 
 # ============================
 # Plots & refits
