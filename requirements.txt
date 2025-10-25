@@ -21,4 +21,3 @@ fpdf2>=2.7
 # Soporte adicional
 python-dateutil>=2.8
 pytz>=2023.3
-
