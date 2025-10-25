@@ -1,7 +1,8 @@
 # ==============================================================
-# 🧠 Sistema Inteligente de Modelado del Precio de la Soya – v.3 Cloud Smart Optimized
+# 🧠 Sistema Inteligente de Modelado del Precio de la Soya – v.4 Cloud Smart Diagnostic
 # SolverTic SRL – División de Inteligencia Artificial y Modelado Predictivo
-# Optimizado para Streamlit Cloud (SARIMA / SARIMAX / Fourier)
+# Incluye diagnóstico visual y tabla EViews del mejor modelo
+# Optimizado para Streamlit Cloud (sin multiprocessing)
 # ==============================================================
 
 import streamlit as st
@@ -14,6 +15,7 @@ from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.stattools import adfuller
 from statsmodels.stats.diagnostic import acorr_ljungbox, het_arch
 from statsmodels.stats.stattools import jarque_bera
+from scipy import stats
 from fpdf import FPDF
 import warnings
 warnings.filterwarnings("ignore")
@@ -47,7 +49,7 @@ def diagnosticos(res):
     jb_p = jarque_bera(resid)[1]
     lb_p = acorr_ljungbox(resid, lags=[min(24, len(resid)//2)], return_df=True)["lb_pvalue"].iloc[0]
     arch_p = het_arch(resid, nlags=12)[1]
-    return jb_p, lb_p, arch_p
+    return jb_p, lb_p, arch_p, resid
 
 def select_differencing(y):
     try: return 1 if adfuller(y.dropna())[1] > 0.05 else 0
@@ -80,7 +82,7 @@ def buscar_modelos(train, test, pmax, qmax, Pmax, Qmax, periodo, include_fourier
                     Xtest = fourier_terms(test.index, periodo, K)
                     res = fit_model(train, order, seasonal_order, exog=Xtrain)
                     fc = res.get_forecast(steps=len(test), exog=Xtest).predicted_mean
-                    jb_p, lb_p, arch_p = diagnosticos(res)
+                    jb_p, lb_p, arch_p, resid = diagnosticos(res)
                     results.append({
                         'order': order,
                         'seasonal': seasonal_order,
@@ -92,12 +94,13 @@ def buscar_modelos(train, test, pmax, qmax, Pmax, Qmax, periodo, include_fourier
                         'arch_p': arch_p,
                         'valid': (jb_p>0.05)&(lb_p>0.05)&(arch_p>0.05),
                         'res': res,
-                        'forecast': fc
+                        'forecast': fc,
+                        'resid': resid
                     })
             else:
                 res = fit_model(train, order, seasonal_order)
                 fc = res.get_forecast(steps=len(test)).predicted_mean
-                jb_p, lb_p, arch_p = diagnosticos(res)
+                jb_p, lb_p, arch_p, resid = diagnosticos(res)
                 results.append({
                     'order': order,
                     'seasonal': seasonal_order,
@@ -109,7 +112,8 @@ def buscar_modelos(train, test, pmax, qmax, Pmax, Qmax, periodo, include_fourier
                     'arch_p': arch_p,
                     'valid': (jb_p>0.05)&(lb_p>0.05)&(arch_p>0.05),
                     'res': res,
-                    'forecast': fc
+                    'forecast': fc,
+                    'resid': resid
                 })
         except Exception as e:
             continue
@@ -179,6 +183,8 @@ if file:
 
         res_best = best['res']
         fc = best['forecast']
+        resid_best = best['resid']
+
         fig2, ax2 = plt.subplots(figsize=(10, 4))
         train.plot(ax=ax2, label='Train')
         test.plot(ax=ax2, label='Test')
@@ -186,6 +192,53 @@ if file:
         ax2.legend()
         st.pyplot(fig2)
 
+        # ================= DIAGNÓSTICOS VISUALES =================
+        st.subheader("📈 Diagnóstico de los Residuales del Mejor Modelo (Estilo EViews)")
+        jb_p, lb_p, arch_p, _ = diagnosticos(res_best)
+
+        mean_resid = np.mean(resid_best)
+        std_resid = np.std(resid_best, ddof=1)
+        skew_resid = stats.skew(resid_best)
+        kurt_resid = stats.kurtosis(resid_best, fisher=False)
+        jb_stat, jb_p = stats.jarque_bera(resid_best)
+
+        df_norm = pd.DataFrame({
+            "Estadístico": ["Media de los residuales","Desviación estándar","Asimetría (Skewness)","Curtosis (Kurtosis)","Jarque–Bera","Probabilidad (JB)","Ljung–Box p-value","ARCH p-value"],
+            "Valor": [f"{mean_resid:.6f}",f"{std_resid:.6f}",f"{skew_resid:.6f}",f"{kurt_resid:.6f}",f"{jb_stat:.6f}",f"{jb_p:.6f}",f"{lb_p:.6f}",f"{arch_p:.6f}"]
+        })
+        st.table(df_norm)
+
+        fig_r, ax_r = plt.subplots(figsize=(8,3))
+        resid_best.plot(ax=ax_r)
+        ax_r.set_title("Residuales en el tiempo")
+        st.pyplot(fig_r)
+
+        fig_h, ax_h = plt.subplots(figsize=(6,3))
+        ax_h.hist(resid_best, bins=20, color='skyblue', edgecolor='black', alpha=0.7, density=True)
+        xmin, xmax = ax_h.get_xlim()
+        x = np.linspace(xmin, xmax, 100)
+        p = stats.norm.pdf(x, mean_resid, std_resid)
+        ax_h.plot(x, p, 'r', linewidth=2)
+        ax_h.set_title("Histograma de residuales con curva normal")
+        st.pyplot(fig_h)
+
+        fig_qq = plt.figure(figsize=(5,3))
+        stats.probplot(resid_best, dist="norm", plot=plt)
+        plt.title("Q–Q Plot de los residuales (EViews Style)")
+        st.pyplot(fig_qq)
+
+        from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+        fig_acf = plt.figure(figsize=(5,3))
+        plot_acf(resid_best, lags=min(24,len(resid_best)//2), ax=plt.gca())
+        plt.title("ACF de los residuales")
+        st.pyplot(fig_acf)
+
+        fig_pacf = plt.figure(figsize=(5,3))
+        plot_pacf(resid_best, lags=min(24,len(resid_best)//2), ax=plt.gca(), method='ywm')
+        plt.title("PACF de los residuales")
+        st.pyplot(fig_pacf)
+
+        # ================= PDF =================
         if st.button("📄 Generar Informe PDF"):
             pdf = FPDF()
             pdf.add_page()
@@ -202,6 +255,11 @@ if file:
             pdf.cell(0, 8, f"Fourier incluido: {include_fourier} (K={K_min}-{K_max})", ln=True)
             pdf.cell(0, 8, f"Winsorización: {winsor}", ln=True)
             pdf.cell(0, 8, f"Mejor modelo: {best['order']} con MAPE={best['mape']:.2f}% y AIC={best['aic']:.1f}", ln=True)
+
+            pdf.ln(8)
+            pdf.cell(0,8,"📈 Diagnóstico de los Residuales del Mejor Modelo (Estilo EViews)",ln=True)
+            for i,row in df_norm.iterrows():
+                pdf.cell(0,8,f"{row['Estadístico']}: {row['Valor']}",ln=True)
 
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
             fig2.savefig(tmp.name, dpi=150, bbox_inches="tight")
