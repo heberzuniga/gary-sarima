@@ -1,74 +1,49 @@
-# ===================== README.md =====================
-- Evaluación de criterios AIC, MAPE y pruebas estadísticas (Jarque-Bera, Ljung-Box, ARCH).
-- Dashboard visual de rendimiento.
-- Generación automática de informes PDF institucionales.
+# ===================== README.md (actualización) =====================
+
+
+## 📘 Guía de Interpretación de los Diagnósticos Estadísticos
+
+
+En el proceso de validación de modelos ARIMA, SARIMA o SARIMAX, se aplican tres pruebas estadísticas fundamentales para verificar la calidad de los residuales del modelo. Un modelo óptimo debe presentar **residuales que se comporten como ruido blanco**, es decir, sin correlación, con varianza constante y distribuidos normalmente.
+
+
+### 1. Prueba Jarque–Bera (JB)
+**Objetivo:** Verificar la **normalidad de los residuales**.
+**Hipótesis nula (H₀):** Los residuales siguen una distribución normal.
+**Criterio:** Si *p-value > 0.05*, no se rechaza H₀ → los residuales son normales.
+**Interpretación:** Valores altos (p < 0.05) indican que los residuales no son normales, lo que puede afectar la validez estadística de los intervalos de confianza y las predicciones.
+
+
+### 2. Prueba Ljung–Box (LB)
+**Objetivo:** Detectar **autocorrelación en los residuales**.
+**Hipótesis nula (H₀):** No existe autocorrelación (los errores son independientes).
+**Criterio:** Si *p-value > 0.05*, no se rechaza H₀ → los residuales son independientes.
+**Interpretación:** Si *p < 0.05*, los residuales presentan autocorrelación → el modelo no ha captado toda la estructura temporal y puede mejorarse con otros parámetros o términos estacionales.
+
+
+### 3. Prueba ARCH (Heterocedasticidad condicional)
+**Objetivo:** Evaluar si la **varianza de los residuales es constante** (homocedasticidad).
+**Hipótesis nula (H₀):** No hay heterocedasticidad (la varianza es constante).
+**Criterio:** Si *p-value > 0.05*, no se rechaza H₀ → los residuales son homocedásticos.
+**Interpretación:** Si *p < 0.05*, los residuales presentan varianza condicional (heterocedasticidad), lo cual sugiere que puede ser útil emplear modelos ARCH/GARCH para capturar mejor la volatilidad.
 
 
 ---
 
 
-## ⚙️ Instalación local
-
-
-1. Clona este repositorio o descárgalo en tu entorno local.
-2. Instala dependencias:
-```bash
-pip install -r requirements.txt
-```
-3. Ejecuta la aplicación:
-```bash
-streamlit run app.py
-```
+### 📊 Interpretación global
+Un modelo con **JB > 0.05**, **LB > 0.05** y **ARCH > 0.05** se considera **estadísticamente sólido**, ya que sus residuales se comportan como ruido blanco. Si alguna de las pruebas falla (p < 0.05), el modelo puede mejorarse ajustando parámetros o aplicando transformaciones.
 
 
 ---
 
 
-## ☁️ Despliegue en Streamlit Cloud
+### 📘 Interpretación de los Diagnósticos (Guía Rápida – incluida en PDF)
+- **Jarque–Bera (JB):** Normalidad de los residuales → *p > 0.05 = OK*
+- **Ljung–Box (LB):** Independencia temporal → *p > 0.05 = OK*
+- **ARCH:** Varianza constante → *p > 0.05 = OK*
 
 
-1. Crea un nuevo proyecto en [streamlit.io/cloud](https://streamlit.io/cloud).
-2. Sube los siguientes archivos:
-- `app.py`
-- `requirements.txt`
-3. Guarda y publica tu aplicación.
+✅ Si las tres pruebas son mayores a 0.05, el modelo es estadísticamente adecuado.
+⚠️ Si alguna es menor a 0.05, revisar especificaciones o considerar Fourier, diferenciación adicional o modelos con volatilidad (ARCH/GARCH).
 
-
----
-
-
-## 🧩 Funcionalidades principales
-
-
-- **Menú lateral interactivo:** configuración de limpieza, Fourier, exógenas y periodos.
-- **Grid Search inteligente:** selección automática de modelos ARIMA/SARIMA/SARIMAX.
-- **Dashboard visual:** métricas clave, gráficos Top 10, AIC vs MAPE y pronóstico real vs predicho.
-- **Informe PDF:** incluye título institucional, parámetros del experimento, gráficos y firma SolverTic SRL.
-
-
----
-
-
-## 📄 Ejemplo de informe PDF
-El reporte incluye:
-- Fecha de generación
-- Periodo analizado y parámetros del experimento
-- Mejor modelo y desempeño (MAPE, AIC)
-- Gráficos de validación y pronóstico
-- Firma institucional de SolverTic SRL
-
-
----
-
-
-## 👨‍💻 Autor
-**Ing. Tito Zúñiga**
-SolverTic SRL – División de Inteligencia Artificial y Modelado Predictivo
-📧 contacto@solvertic.com
-
-
----
-
-
-## 🏢 Derechos
-© 2025 SolverTic SRL – Todos los derechos reservados.
