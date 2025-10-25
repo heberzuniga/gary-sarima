@@ -1,7 +1,7 @@
 # ==============================================================
-# 🧠 Sistema Inteligente de Modelado del Precio de la Soya
+# 🧠 Sistema Inteligente de Modelado del Precio de la Soya – v.3 Cloud Smart Optimized
 # SolverTic SRL – División de Inteligencia Artificial y Modelado Predictivo
-# Optimizado para Streamlit Cloud (sin multiprocessing)
+# Optimizado para Streamlit Cloud (SARIMA / SARIMAX / Fourier)
 # ==============================================================
 
 import streamlit as st
@@ -22,9 +22,13 @@ warnings.filterwarnings("ignore")
 st.set_page_config(page_title="Sistema Inteligente de Modelado del Precio de la Soya", layout="wide")
 
 # ========================= FUNCIONES AUXILIARES =========================
-def limpiar_serie(s):
-    s = pd.to_numeric(s, errors="coerce")
-    s = s.replace([np.inf, -np.inf], np.nan)
+def winsorize_series(s, low_q=0.01, high_q=0.99):
+    lo, hi = s.quantile(low_q), s.quantile(high_q)
+    return s.clip(lower=lo, upper=hi)
+
+def limpiar_serie(s, winsor=True):
+    s = pd.to_numeric(s, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    if winsor: s = winsorize_series(s)
     s = s.interpolate(method="linear").bfill().ffill()
     return s
 
@@ -33,11 +37,10 @@ def mape(y_true, y_pred):
     eps = 1e-8
     return np.mean(np.abs((y_true - y_pred) / np.maximum(np.abs(y_true), eps))) * 100.0
 
-def fit_model(y, order, seasonal_order):
-    model = SARIMAX(y, order=order, seasonal_order=seasonal_order,
+def fit_model(y, order, seasonal_order, exog=None):
+    model = SARIMAX(y, order=order, seasonal_order=seasonal_order, exog=exog,
                     enforce_stationarity=False, enforce_invertibility=False)
-    res = model.fit(disp=False)
-    return res
+    return model.fit(disp=False)
 
 def diagnosticos(res):
     resid = res.resid.dropna()
@@ -46,42 +49,77 @@ def diagnosticos(res):
     arch_p = het_arch(resid, nlags=12)[1]
     return jb_p, lb_p, arch_p
 
-def buscar_modelos(train, test, pmax=3, qmax=3, periodo=12):
-    st.info("🔍 Iniciando búsqueda secuencial de modelos (modo Streamlit Cloud optimizado)...")
+def select_differencing(y):
+    try: return 1 if adfuller(y.dropna())[1] > 0.05 else 0
+    except: return 0
+
+def fourier_terms(index, period=12, K=1):
+    t = np.arange(len(index))
+    X = {}
+    for k in range(1, K + 1):
+        X[f'sin_{k}'] = np.sin(2 * np.pi * k * t / period)
+        X[f'cos_{k}'] = np.cos(2 * np.pi * k * t / period)
+    return pd.DataFrame(X, index=index)
+
+# ========================= GRID SEARCH SECUENCIAL =========================
+def buscar_modelos(train, test, pmax, qmax, Pmax, Qmax, periodo, include_fourier, K_min, K_max):
+    st.info("🔍 Buscando el mejor modelo ARIMA / SARIMA / SARIMAX (modo Cloud Optimizado)...")
     results = []
-    total = (pmax + 1) * (qmax + 1)
+    d = select_differencing(train)
+    total = (pmax+1)*(qmax+1)*(Pmax+1)*(Qmax+1)
     bar = st.progress(0)
 
-    for i, (p, q) in enumerate([(p, q) for p in range(pmax + 1) for q in range(qmax + 1)]):
-        bar.progress(int((i + 1) / total * 100))
-        order = (p, 1, q)
-        seasonal_order = (p, 1, q, periodo)
+    for i, (p, q, P, Q) in enumerate([(p, q, P, Q) for p in range(pmax+1) for q in range(qmax+1) for P in range(Pmax+1) for Q in range(Qmax+1)]):
+        bar.progress(int((i+1)/total*100))
+        order = (p, d, q)
+        seasonal_order = (P, 1, Q, periodo)
         try:
-            res = fit_model(train, order, seasonal_order)
-            fc = res.get_forecast(steps=len(test)).predicted_mean
-            jb_p, lb_p, arch_p = diagnosticos(res)
-            results.append({
-                'order': order,
-                'seasonal': seasonal_order,
-                'aic': res.aic,
-                'mape': mape(test, fc),
-                'jb_p': jb_p,
-                'lb_p': lb_p,
-                'arch_p': arch_p,
-                'res': res,
-                'forecast': fc
-            })
+            if include_fourier:
+                for K in range(K_min, K_max+1):
+                    Xtrain = fourier_terms(train.index, periodo, K)
+                    Xtest = fourier_terms(test.index, periodo, K)
+                    res = fit_model(train, order, seasonal_order, exog=Xtrain)
+                    fc = res.get_forecast(steps=len(test), exog=Xtest).predicted_mean
+                    jb_p, lb_p, arch_p = diagnosticos(res)
+                    results.append({
+                        'order': order,
+                        'seasonal': seasonal_order,
+                        'fourier_K': K,
+                        'aic': res.aic,
+                        'mape': mape(test, fc),
+                        'jb_p': jb_p,
+                        'lb_p': lb_p,
+                        'arch_p': arch_p,
+                        'valid': (jb_p>0.05)&(lb_p>0.05)&(arch_p>0.05),
+                        'res': res,
+                        'forecast': fc
+                    })
+            else:
+                res = fit_model(train, order, seasonal_order)
+                fc = res.get_forecast(steps=len(test)).predicted_mean
+                jb_p, lb_p, arch_p = diagnosticos(res)
+                results.append({
+                    'order': order,
+                    'seasonal': seasonal_order,
+                    'fourier_K': None,
+                    'aic': res.aic,
+                    'mape': mape(test, fc),
+                    'jb_p': jb_p,
+                    'lb_p': lb_p,
+                    'arch_p': arch_p,
+                    'valid': (jb_p>0.05)&(lb_p>0.05)&(arch_p>0.05),
+                    'res': res,
+                    'forecast': fc
+                })
         except Exception as e:
-            print(f"Error modelo {p,q}: {e}")
             continue
 
-    df = pd.DataFrame(results)
-    if df.empty:
+    if not results:
         st.error("No se encontraron modelos válidos.")
         return None, None
 
-    df['valid'] = (df['jb_p'] > 0.05) & (df['lb_p'] > 0.05) & (df['arch_p'] > 0.05)
-    best = df.sort_values(['valid', 'mape', 'aic'], ascending=[False, True, True]).iloc[0]
+    df = pd.DataFrame(results)
+    best = df.sort_values(['valid','mape','aic'],ascending=[False,True,True]).iloc[0]
     return df, best
 
 # ========================= INTERFAZ PRINCIPAL =========================
@@ -92,10 +130,14 @@ with st.sidebar:
     st.header("📂 Cargar y Configurar")
     file = st.file_uploader("Sube tu archivo CSV de precios mensuales", type=['csv'])
     pmax = st.slider("Máx p/q", 1, 5, 3)
+    Pmax = st.slider("Máx P/Q (estacional)", 0, 3, 1)
+    include_fourier = st.checkbox("Incluir Fourier (SARIMAX)", value=True)
+    K_min, K_max = st.slider("Rango K Fourier", 1, 6, (1,3))
     periodo_estacional = st.number_input("Periodo estacional (meses)", 3, 24, 12)
     test_size = st.slider("Meses para Test", 6, 36, 24)
     fecha_inicio = st.date_input("Inicio de análisis", datetime.date(2010, 1, 1))
     fecha_fin = st.date_input("Fin de análisis", datetime.date(2025, 5, 31))
+    winsor = st.checkbox("Capar outliers (winsorizar)", value=True)
     st.markdown("---")
     st.caption("Desarrollado por SolverTic SRL – Ingeniería de Sistemas Inteligentes © 2025")
 
@@ -104,7 +146,7 @@ if file:
     df.iloc[:, 0] = pd.to_datetime(df.iloc[:, 0])
     df = df.set_index(df.columns[0]).sort_index()
 
-    serie = limpiar_serie(df.iloc[:, 0])
+    serie = limpiar_serie(df.iloc[:, 0], winsor=winsor)
     serie = serie.loc[(serie.index >= str(fecha_inicio)) & (serie.index <= str(fecha_fin))]
 
     train = serie[:-test_size]
@@ -114,7 +156,9 @@ if file:
     st.line_chart(serie)
     st.write(f"**Observaciones:** {len(serie)} | Train={len(train)} | Test={len(test)}")
 
-    df_res, best = buscar_modelos(train, test, pmax=pmax, qmax=pmax, periodo=periodo_estacional)
+    df_res, best = buscar_modelos(train, test, pmax, qmax=pmax, Pmax=Pmax, Qmax=Pmax,
+                                  periodo=periodo_estacional, include_fourier=include_fourier,
+                                  K_min=K_min, K_max=K_max)
 
     if df_res is not None:
         st.success("✅ Modelado completado exitosamente")
@@ -124,7 +168,7 @@ if file:
         c3.metric("Modelos válidos", f"{df_res['valid'].sum()}/{len(df_res)}")
 
         st.subheader("🏆 Top 10 modelos por MAPE")
-        st.dataframe(df_res.sort_values('mape').head(10)[['order', 'seasonal', 'mape', 'aic']])
+        st.dataframe(df_res.sort_values('mape').head(10)[['order','seasonal','fourier_K','mape','aic']])
 
         fig, ax = plt.subplots()
         ax.scatter(df_res['aic'], df_res['mape'], alpha=0.7, color='seagreen')
@@ -153,8 +197,10 @@ if file:
             pdf.cell(0, 8, f"Fecha de generación: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
             pdf.cell(0, 8, f"Periodo analizado: {fecha_inicio} a {fecha_fin}", ln=True)
             pdf.cell(0, 8, f"Meses Test: {test_size}", ln=True)
-            pdf.cell(0, 8, f"p/q máximo: {pmax}", ln=True)
+            pdf.cell(0, 8, f"p/q máximo: {pmax} | P/Q máximo: {Pmax}", ln=True)
             pdf.cell(0, 8, f"Periodo estacional: {periodo_estacional}", ln=True)
+            pdf.cell(0, 8, f"Fourier incluido: {include_fourier} (K={K_min}-{K_max})", ln=True)
+            pdf.cell(0, 8, f"Winsorización: {winsor}", ln=True)
             pdf.cell(0, 8, f"Mejor modelo: {best['order']} con MAPE={best['mape']:.2f}% y AIC={best['aic']:.1f}", ln=True)
 
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
