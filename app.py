@@ -33,37 +33,52 @@ st.pyplot(fig_pacf)
 
 # ================= PDF =================
 if st.button("📄 Generar Informe PDF"):
-pdf = FPDF()
-pdf.add_page()
-pdf.set_font("Arial", 'B', 16)
-pdf.cell(0, 10, "Sistema Inteligente de Modelado del Precio de la Soya", ln=True, align='C')
-pdf.set_font("Arial", '', 12)
-pdf.cell(0, 10, "SolverTic SRL – División de Inteligencia Artificial y Modelado Predictivo", ln=True, align='C')
-pdf.ln(10)
-pdf.cell(0, 8, f"Fecha de generación: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
-pdf.cell(0, 8, f"Periodo analizado: {fecha_inicio} a {fecha_fin}", ln=True)
-pdf.cell(0, 8, f"Meses Test: {test_size}", ln=True)
-pdf.cell(0, 8, f"p/q máximo: {pmax} | P/Q máximo: {Pmax}", ln=True)
-pdf.cell(0, 8, f"Periodo estacional: {periodo_estacional}", ln=True)
-pdf.cell(0, 8, f"Fourier incluido: {include_fourier} (K={K_min}-{K_max})", ln=True)
-pdf.cell(0, 8, f"Winsorización: {winsor}", ln=True)
-pdf.cell(0, 8, f"Mejor modelo: {best['order']} con MAPE={best['mape']:.2f}% y AIC={best['aic']:.1f}", ln=True)
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", 'B', 16)
+    pdf.cell(0, 10, "Sistema Inteligente de Modelado del Precio de la Soya", ln=True, align='C')
+    pdf.set_font("Arial", '', 12)
+    pdf.cell(0, 10, "SolverTic SRL – División de Inteligencia Artificial y Modelado Predictivo", ln=True, align='C')
+    pdf.ln(10)
+    pdf.cell(0, 8, f"Fecha de generación: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
+    pdf.cell(0, 8, f"Periodo analizado: {fecha_inicio} a {fecha_fin}", ln=True)
+    pdf.cell(0, 8, f"Meses Test: {test_size}", ln=True)
+    pdf.cell(0, 8, f"p/q máximo: {pmax} | P/Q máximo: {Pmax}", ln=True)
+    pdf.cell(0, 8, f"Periodo estacional: {periodo_estacional}", ln=True)
+    pdf.cell(0, 8, f"Fourier incluido: {include_fourier} (K={K_min}-{K_max})", ln=True)
+    pdf.cell(0, 8, f"Winsorización: {winsor}", ln=True)
+    pdf.cell(0, 8, f"Mejor modelo: {best['order']} con MAPE={best['mape']:.2f}% y AIC={best['aic']:.1f}", ln=True)
 
+    pdf.ln(8)
+    pdf.cell(0, 8, "📈 Diagnóstico de los Residuales del Mejor Modelo (Estilo EViews)", ln=True)
+    for i, row in df_norm.iterrows():
+        pdf.cell(0, 8, f"{row['Estadístico']}: {row['Valor']}", ln=True)
 
-pdf.ln(8)
-pdf.cell(0,8,"📈 Diagnóstico de los Residuales del Mejor Modelo (Estilo EViews)",ln=True)
-for i,row in df_norm.iterrows():
-pdf.cell(0,8,f"{row['Estadístico']}: {row['Valor']}",ln=True)
+    # --- Guía rápida de interpretación ---
+    pdf.ln(6)
+    pdf.set_font("Arial", 'B', 12)
+    pdf.cell(0, 8, "📘 Interpretación de los Diagnósticos (Guía Rápida)", ln=True)
+    pdf.set_font("Arial", '', 11)
+    pdf.multi_cell(0, 8,
+        "• Jarque–Bera (JB): Normalidad de los residuales → p > 0.05 = OK\n"
+        "• Ljung–Box (LB): Independencia temporal → p > 0.05 = OK\n"
+        "• ARCH: Varianza constante → p > 0.05 = OK\n"
+        "Si las tres pruebas superan 0.05, el modelo es estadísticamente sólido."
+    )
 
+    # --- Gráfico de pronóstico ---
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+    fig2.savefig(tmp.name, dpi=150, bbox_inches="tight")
+    pdf.image(tmp.name, w=170)
 
-tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-fig2.savefig(tmp.name, dpi=150, bbox_inches="tight")
-pdf.image(tmp.name, w=170)
-tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-pdf.output(tmp_pdf.name)
+    # --- Generar PDF temporal ---
+    tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+    pdf.output(tmp_pdf.name)
 
-
-with open(tmp_pdf.name, 'rb') as f:
-st.download_button("💾 Descargar Informe PDF", f, file_name="Informe_Modelado_Soya.pdf", mime="application/pdf")
+    # --- Botón de descarga ---
+    with open(tmp_pdf.name, 'rb') as f:
+        st.download_button("💾 Descargar Informe PDF", f,
+                           file_name="Informe_Modelado_Soya.pdf",
+                           mime="application/pdf")
 else:
-st.warning("Por favor, sube un archivo CSV con tu serie de precios mensuales.")
+    st.warning("Por favor, sube un archivo CSV con tu serie de precios mensuales.")
