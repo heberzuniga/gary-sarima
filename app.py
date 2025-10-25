@@ -207,15 +207,18 @@ if file:
             pdf.cell(0, 8, f"Fourier incluido: {include_fourier} (K={K_min}-{K_max})", ln=True)
             pdf.cell(0, 8, f"Winsorización: {winsor}", ln=True)
             pdf.cell(0, 8, f"Mejor modelo: {best['order']} con MAPE={best['mape']:06.2f}% y AIC={best['aic']:06.2f}", ln=True)
+
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
             fig2.savefig(tmp.name, dpi=150, bbox_inches="tight")
             pdf.image(tmp.name, w=170)
+
             tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
             pdf.output(tmp_pdf.name)
+
             with open(tmp_pdf.name, 'rb') as f:
                 st.download_button("💾 Descargar Informe PDF", f,
                                    file_name="Informe_Modelado_Soya.pdf",
                                    mime="application/pdf")
 
-    else:
-        st.warning("Por favor, sube un archivo CSV con tu serie de precios mensuales.")
+else:
+    st.warning("Por favor, sube un archivo CSV con tu serie de precios mensuales.")
