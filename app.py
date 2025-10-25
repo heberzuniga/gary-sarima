@@ -20,6 +20,10 @@ warnings.filterwarnings("ignore")
 
 st.set_page_config(page_title="Sistema Inteligente de Modelado del Precio de la Soya", layout="wide")
 
+# ==============================================================
+# FUNCIONES AUXILIARES
+# ==============================================================
+
 def winsorize_series(s, low_q=0.01, high_q=0.99):
     lo, hi = s.quantile(low_q), s.quantile(high_q)
     return s.clip(lower=lo, upper=hi)
@@ -62,13 +66,20 @@ def fourier_terms(index, period=12, K=1):
         X[f'cos_{k}'] = np.cos(2 * np.pi * k * t / period)
     return pd.DataFrame(X, index=index)
 
+# ==============================================================
+# BÚSQUEDA DE MODELOS
+# ==============================================================
+
 def buscar_modelos(train, test, pmax, qmax, Pmax, Qmax, periodo, include_fourier, K_min, K_max):
     st.info("🔍 Buscando el mejor modelo ARIMA / SARIMA / SARIMAX (modo Cloud Optimizado)...")
     results = []
     d = select_differencing(train)
     total = (pmax+1)*(qmax+1)*(Pmax+1)*(Qmax+1)
     bar = st.progress(0)
-    for i, (p, q, P, Q) in enumerate([(p, q, P, Q) for p in range(pmax+1) for q in range(qmax+1) for P in range(Pmax+1) for Q in range(Qmax+1)]):
+    for i, (p, q, P, Q) in enumerate([(p, q, P, Q) for p in range(pmax+1)
+                                      for q in range(qmax+1)
+                                      for P in range(Pmax+1)
+                                      for Q in range(Qmax+1)]):
         bar.progress(int((i+1)/total*100))
         order = (p, d, q)
         seasonal_order = (P, 1, Q, periodo)
@@ -80,22 +91,39 @@ def buscar_modelos(train, test, pmax, qmax, Pmax, Qmax, periodo, include_fourier
                     res = fit_model(train, order, seasonal_order, exog=Xtrain)
                     fc = res.get_forecast(steps=len(test), exog=Xtest).predicted_mean
                     jb_p, lb_p, arch_p, resid = diagnosticos(res)
-                    results.append({'order': order,'seasonal': seasonal_order,'fourier_K': K,'aic': res.aic,'mape': mape(test, fc),'jb_p': jb_p,'lb_p': lb_p,'arch_p': arch_p,'valid': (jb_p>0.05)&(lb_p>0.05)&(arch_p>0.05),'res': res,'forecast': fc,'resid': resid})
+                    results.append({
+                        'order': order,
+                        'seasonal': seasonal_order,
+                        'fourier_K': K,
+                        'aic': res.aic,
+                        'mape': mape(test, fc),
+                        'jb_p': jb_p, 'lb_p': lb_p, 'arch_p': arch_p,
+                        'valid': (jb_p > 0.05) & (lb_p > 0.05) & (arch_p > 0.05),
+                        'res': res, 'forecast': fc, 'resid': resid
+                    })
             else:
                 res = fit_model(train, order, seasonal_order)
                 fc = res.get_forecast(steps=len(test)).predicted_mean
                 jb_p, lb_p, arch_p, resid = diagnosticos(res)
-                results.append({'order': order,'seasonal': seasonal_order,'fourier_K': None,'aic': res.aic,'mape': mape(test, fc),'jb_p': jb_p,'lb_p': lb_p,'arch_p': arch_p,'valid': (jb_p>0.05)&(lb_p>0.05)&(arch_p>0.05),'res': res,'forecast': fc,'resid': resid})
+                results.append({
+                    'order': order, 'seasonal': seasonal_order, 'fourier_K': None,
+                    'aic': res.aic, 'mape': mape(test, fc),
+                    'jb_p': jb_p, 'lb_p': lb_p, 'arch_p': arch_p,
+                    'valid': (jb_p > 0.05) & (lb_p > 0.05) & (arch_p > 0.05),
+                    'res': res, 'forecast': fc, 'resid': resid
+                })
         except Exception:
             continue
     if not results:
         st.error("No se encontraron modelos válidos.")
         return None, None
     df = pd.DataFrame(results)
-    best = df.sort_values(['valid','mape','aic'],ascending=[False,True,True]).iloc[0]
+    best = df.sort_values(['valid', 'mape', 'aic'], ascending=[False, True, True]).iloc[0]
     return df, best
 
-# ================= INTERFAZ PRINCIPAL =================
+# ==============================================================
+# INTERFAZ PRINCIPAL
+# ==============================================================
 
 st.title("🧠 Sistema Inteligente de Modelado del Precio de la Soya")
 st.caption("SolverTic SRL – División de Inteligencia Artificial y Modelado Predictivo")
@@ -127,7 +155,9 @@ if file:
     st.line_chart(serie)
     st.write(f"**Observaciones:** {len(serie)} | Train={len(train)} | Test={len(test)}")
 
-    df_res, best = buscar_modelos(train, test, pmax, qmax=pmax, Pmax=Pmax, Qmax=Pmax, periodo=periodo_estacional, include_fourier=include_fourier, K_min=K_min, K_max=K_max)
+    df_res, best = buscar_modelos(train, test, pmax, qmax=pmax, Pmax=Pmax, Qmax=Pmax,
+                                  periodo=periodo_estacional, include_fourier=include_fourier,
+                                  K_min=K_min, K_max=K_max)
 
     if df_res is not None:
         st.success("✅ Modelado completado exitosamente")
@@ -137,7 +167,7 @@ if file:
         c3.metric("Modelos válidos", f"{df_res['valid'].sum()}/{len(df_res)}")
 
         st.subheader("🏆 Top 10 modelos por MAPE")
-        tabla = df_res.sort_values('mape').head(10)[['order','seasonal','fourier_K','mape','aic']].copy()
+        tabla = df_res.sort_values('mape').head(10)[['order', 'seasonal', 'fourier_K', 'mape', 'aic']].copy()
         tabla['mape'] = tabla['mape'].map(lambda x: f"{x:06.2f}")
         tabla['aic'] = tabla['aic'].map(lambda x: f"{x:06.2f}")
         st.dataframe(tabla)
@@ -160,45 +190,6 @@ if file:
         ax2.legend()
         st.pyplot(fig2)
 
-        jb_p, lb_p, arch_p, _ = diagnosticos(res_best)
-        mean_resid = np.mean(resid_best)
-        std_resid = np.std(resid_best, ddof=1)
-        skew_resid = stats.skew(resid_best)
-        kurt_resid = stats.kurtosis(resid_best, fisher=False)
-        jb_stat, jb_p = stats.jarque_bera(resid_best)
-        df_norm = pd.DataFrame({"Estadístico": ["Media de los residuales","Desviación estándar","Asimetría (Skewness)","Curtosis (Kurtosis)","Jarque–Bera","Probabilidad (JB)","Ljung–Box p-value","ARCH p-value"],"Valor": [f"{mean_resid:.6f}",f"{std_resid:.6f}",f"{skew_resid:.6f}",f"{kurt_resid:.6f}",f"{jb_stat:.6f}",f"{jb_p:.6f}",f"{lb_p:.6f}",f"{arch_p:.6f}"]})
-        st.table(df_norm)
-
-        fig_r, ax_r = plt.subplots(figsize=(8,3))
-        resid_best.plot(ax=ax_r)
-        ax_r.set_title("Residuales en el tiempo")
-        st.pyplot(fig_r)
-
-        fig_h, ax_h = plt.subplots(figsize=(6,3))
-        ax_h.hist(resid_best, bins=20, color='skyblue', edgecolor='black', alpha=0.7, density=True)
-        xmin, xmax = ax_h.get_xlim()
-        x = np.linspace(xmin, xmax, 100)
-        p = stats.norm.pdf(x, mean_resid, std_resid)
-        ax_h.plot(x, p, 'r', linewidth=2)
-        ax_h.set_title("Histograma de residuales con curva normal")
-        st.pyplot(fig_h)
-
-        fig_qq = plt.figure(figsize=(5,3))
-        stats.probplot(resid_best, dist="norm", plot=plt)
-        plt.title("Q–Q Plot de los residuales (EViews Style)")
-        st.pyplot(fig_qq)
-
-        from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
-        fig_acf = plt.figure(figsize=(5,3))
-        plot_acf(resid_best, lags=min(24,len(resid_best)//2), ax=plt.gca())
-        plt.title("ACF de los residuales")
-        st.pyplot(fig_acf)
-
-        fig_pacf = plt.figure(figsize=(5,3))
-        plot_pacf(resid_best, lags=min(24,len(resid_best)//2), ax=plt.gca(), method='ywm')
-        plt.title("PACF de los residuales")
-        st.pyplot(fig_pacf)
-
         # ================= PDF =================
         if st.button("📄 Generar Informe PDF"):
             pdf = FPDF()
@@ -216,15 +207,6 @@ if file:
             pdf.cell(0, 8, f"Fourier incluido: {include_fourier} (K={K_min}-{K_max})", ln=True)
             pdf.cell(0, 8, f"Winsorización: {winsor}", ln=True)
             pdf.cell(0, 8, f"Mejor modelo: {best['order']} con MAPE={best['mape']:06.2f}% y AIC={best['aic']:06.2f}", ln=True)
-            pdf.ln(8)
-            pdf.cell(0, 8, "📈 Diagnóstico de los Residuales del Mejor Modelo (Estilo EViews)", ln=True)
-            for i, row in df_norm.iterrows():
-                pdf.cell(0, 8, f"{row['Estadístico']}: {row['Valor']}", ln=True)
-            pdf.ln(6)
-            pdf.set_font("Arial", 'B', 12)
-            pdf.cell(0, 8, "📘 Interpretación de los Diagnósticos (Guía Rápida)", ln=True)
-            pdf.set_font("Arial", '', 11)
-            pdf.multi_cell(0, 8, "• Jarque–Bera (JB): Normalidad de los residuales → p > 0.05 = OK\n""• Ljung–Box (LB): Independencia temporal → p > 0.05 = OK\n""• ARCH: Varianza constante → p > 0.05 = OK\n""Si las tres pruebas superan 0.05, el modelo es estadísticamente sólido.")
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
             fig2.savefig(tmp.name, dpi=150, bbox_inches="tight")
             pdf.image(tmp.name, w=170)
