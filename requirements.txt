@@ -1,23 +1,13 @@
-# =========================================
-# Requisitos para Sistema Inteligente de Modelado del Precio de la Soya
-# =========================================
+# ===================== requirements.txt =====================
+# Dependencias para Sistema Inteligente de Modelado del Precio de la Soya
 
-# Aplicación principal
+
 streamlit>=1.35
-
-# Ciencia de datos y manipulación
 pandas>=2.0
 numpy>=1.23
 matplotlib>=3.7
-scipy>=1.10
-
-# Modelado estadístico
 statsmodels>=0.14
-joblib>=1.3
-
-# Generación de reportes PDF
+scipy>=1.10
 fpdf2>=2.7
-
-# Soporte adicional
 python-dateutil>=2.8
 pytz>=2023.3
