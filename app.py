@@ -1,65 +1,31 @@
 # ==============================================================
 # 🧠 Sistema Inteligente de Modelado del Precio de la Soya
 # SolverTic SRL – División de Inteligencia Artificial y Modelado Predictivo
-# Autor: Ing. Tito Zúñiga
+# Optimizado para Streamlit Cloud (sin multiprocessing)
 # ==============================================================
 
 import streamlit as st
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
-import io
-import os
-import tempfile
 import datetime
-from pathlib import Path
-from typing import Tuple, Dict, Any, Optional, List
-from joblib import Parallel, delayed
+import tempfile
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from statsmodels.tsa.stattools import adfuller
 from statsmodels.stats.diagnostic import acorr_ljungbox, het_arch
 from statsmodels.stats.stattools import jarque_bera
-from scipy import stats
 from fpdf import FPDF
 import warnings
 warnings.filterwarnings("ignore")
 
-# ==============================================================
-# CONFIGURACIÓN STREAMLIT
-# ==============================================================
+# ========================= CONFIGURACIÓN STREAMLIT =========================
 st.set_page_config(page_title="Sistema Inteligente de Modelado del Precio de la Soya", layout="wide")
 
-# ==============================================================
-# FUNCIONES AUXILIARES
-# ==============================================================
-def to_month_end_index(idx) -> pd.DatetimeIndex:
-    if isinstance(idx, pd.PeriodIndex):
-        return idx.to_timestamp('M')
-    idx = pd.to_datetime(idx, errors="coerce")
-    return idx.to_period('M').to_timestamp('M')
-
-def replace_nonfinite(s: pd.Series) -> pd.Series:
-    return pd.to_numeric(s, errors="coerce").replace([np.inf, -np.inf], np.nan)
-
-def winsorize_series(s: pd.Series, low_q=0.01, high_q=0.99):
-    lo, hi = s.quantile(low_q), s.quantile(high_q)
-    return s.clip(lower=lo, upper=hi)
-
-def interpolate_series(s: pd.Series, method="linear"):
-    return s.interpolate(method=method, limit_direction="both")
-
-def clean_pipeline(s: pd.Series, do_winsor=True, do_interp=True, do_ffill=True, do_bfill=True):
-    s = replace_nonfinite(s)
-    if do_winsor: s = winsorize_series(s)
-    if do_interp: s = interpolate_series(s)
-    if do_ffill: s = s.ffill()
-    if do_bfill: s = s.bfill()
-    return s
-
-def ensure_monthly_series(s: pd.Series):
-    s = s.dropna().sort_index()
-    s = s.resample('M').mean().dropna()
-    s.index = to_month_end_index(s.index)
+# ========================= FUNCIONES AUXILIARES =========================
+def limpiar_serie(s):
+    s = pd.to_numeric(s, errors="coerce")
+    s = s.replace([np.inf, -np.inf], np.nan)
+    s = s.interpolate(method="linear").bfill().ffill()
     return s
 
 def mape(y_true, y_pred):
@@ -67,183 +33,140 @@ def mape(y_true, y_pred):
     eps = 1e-8
     return np.mean(np.abs((y_true - y_pred) / np.maximum(np.abs(y_true), eps))) * 100.0
 
-def fit_sarimax(y, order, seasonal_order=(0,0,0,0), exog=None):
-    model = SARIMAX(y, order=order, seasonal_order=seasonal_order, exog=exog,
+def fit_model(y, order, seasonal_order):
+    model = SARIMAX(y, order=order, seasonal_order=seasonal_order,
                     enforce_stationarity=False, enforce_invertibility=False)
-    return model.fit(disp=False)
+    res = model.fit(disp=False)
+    return res
 
-def diagnostics(res):
+def diagnosticos(res):
     resid = res.resid.dropna()
     jb_p = jarque_bera(resid)[1]
     lb_p = acorr_ljungbox(resid, lags=[min(24, len(resid)//2)], return_df=True)["lb_pvalue"].iloc[0]
     arch_p = het_arch(resid, nlags=12)[1]
-    return {"jb_p": jb_p, "lb_p": lb_p, "arch_p": arch_p, "resid": resid}
+    return jb_p, lb_p, arch_p
 
-def record_result(kind, order, seasonal_order, test, fc, diag, aic):
-    return {
-        "model": kind,
-        "order": order,
-        "seasonal_order": seasonal_order,
-        "aic": aic,
-        "mape": mape(test, fc),
-        "jb_p": diag["jb_p"],
-        "lb_p": diag["lb_p"],
-        "arch_p": diag["arch_p"],
-        "forecast": fc
-    }
-
-def select_differencing(y):
-    try: return 1 if adfuller(y.dropna())[1] > 0.05 else 0
-    except: return 0
-
-def fourier_terms(index, period=12, K=1):
-    t = np.arange(len(index))
-    X = {}
-    for k in range(1, K + 1):
-        X[f'sin_{k}'] = np.sin(2 * np.pi * k * t / period)
-        X[f'cos_{k}'] = np.cos(2 * np.pi * k * t / period)
-    return pd.DataFrame(X, index=index)
-
-# ==============================================================
-# GRID SEARCH INTELIGENTE Y DASHBOARD
-# ==============================================================
-def grid_search_models(train, test, seasonal_period=12, max_pq=3, include_fourier=True, K_fourier=(1, 2)):
-    is_cloud = os.environ.get("STREAMLIT_RUNTIME") is not None
-    exec_mode = "Cloud" if is_cloud else "Normal"
-
-    d = select_differencing(train)
+def buscar_modelos(train, test, pmax=3, qmax=3, periodo=12):
+    st.info("🔍 Iniciando búsqueda secuencial de modelos (modo Streamlit Cloud optimizado)...")
     results = []
-
-    combos = [(p, d, q, D) for p in range(max_pq + 1) for q in range(max_pq + 1) for D in [0, 1]]
-    total = len(combos)
+    total = (pmax + 1) * (qmax + 1)
     bar = st.progress(0)
-    
-    def evaluate_combo(p, d, q, D, idx):
-        bar.progress(int((idx + 1) / total * 100))
-        order = (p, d, q)
-        seasonal_order = (p, D, q, seasonal_period)
+
+    for i, (p, q) in enumerate([(p, q) for p in range(pmax + 1) for q in range(qmax + 1)]):
+        bar.progress(int((i + 1) / total * 100))
+        order = (p, 1, q)
+        seasonal_order = (p, 1, q, periodo)
         try:
-            res = fit_sarimax(train, order, seasonal_order)
+            res = fit_model(train, order, seasonal_order)
             fc = res.get_forecast(steps=len(test)).predicted_mean
-            diag = diagnostics(res)
-            return record_result("SARIMA", order, seasonal_order, test, fc, diag, res.aic)
+            jb_p, lb_p, arch_p = diagnosticos(res)
+            results.append({
+                'order': order,
+                'seasonal': seasonal_order,
+                'aic': res.aic,
+                'mape': mape(test, fc),
+                'jb_p': jb_p,
+                'lb_p': lb_p,
+                'arch_p': arch_p,
+                'res': res,
+                'forecast': fc
+            })
         except:
-            return None
-
-    parallel_results = [evaluate_combo(p, d, q, D, i) for i, (p, d, q, D) in enumerate(combos)]
-    results = [r for r in parallel_results if r]
-
-    if not results:
-        st.warning("No se encontraron modelos válidos.")
-        return {"summary": pd.DataFrame(), "best": None}
+            continue
 
     df = pd.DataFrame(results)
-    df["passes_all"] = df[["jb_p", "lb_p", "arch_p"]].ge(0.05).all(axis=1)
-    best = df.sort_values(["passes_all", "mape", "aic"], ascending=[False, True, True]).iloc[0].to_dict()
+    if df.empty:
+        st.error("No se encontraron modelos válidos.")
+        return None
 
-    # --- Dashboard visual ---
-    st.markdown("## 📊 Resumen de Rendimiento del Modelado")
-    total_models = len(df)
-    passed_models = df["passes_all"].sum()
-    pct_passed = passed_models / total_models * 100
-    best_mape, best_aic = best['mape'], best['aic']
+    df['valid'] = (df['jb_p'] > 0.05) & (df['lb_p'] > 0.05) & (df['arch_p'] > 0.05)
+    best = df.sort_values(['valid', 'mape', 'aic'], ascending=[False, True, True]).iloc[0]
+    return df, best
 
-    c1, c2, c3 = st.columns(3)
-    c1.metric("🏆 Mejor MAPE (%)", f"{best_mape:.2f}")
-    c2.metric("📉 AIC", f"{best_aic:.1f}")
-    c3.metric("📊 Modelos válidos", f"{pct_passed:.1f}%")
-
-    top10 = df.sort_values("mape").head(10)
-    fig1, ax1 = plt.subplots(figsize=(8, 4))
-    ax1.barh(top10["model"].astype(str), top10["mape"], color='seagreen')
-    ax1.invert_yaxis()
-    ax1.set_title("Top 10 Modelos con menor MAPE")
-    st.pyplot(fig1)
-
-    fig2, ax2 = plt.subplots(figsize=(4, 4))
-    ax2.pie([passed_models, total_models - passed_models], labels=['Válidos', 'No válidos'], autopct='%1.1f%%', colors=['#66b3ff', '#ff9999'])
-    ax2.set_title("Distribución de Calidad Estadística")
-    st.pyplot(fig2)
-
-    fig3, ax3 = plt.subplots(figsize=(6, 4))
-    ax3.scatter(df['aic'], df['mape'], color='slateblue', alpha=0.7)
-    ax3.set_xlabel('AIC')
-    ax3.set_ylabel('MAPE (%)')
-    ax3.set_title('Relación AIC vs MAPE')
-    st.pyplot(fig3)
-
-    # --- Pronóstico ---
-    best_order = best['order']
-    best_seasonal = best['seasonal_order']
-    res_best = fit_sarimax(train, best_order, best_seasonal)
-    fc = res_best.get_forecast(steps=len(test)).predicted_mean
-
-    fig4, ax4 = plt.subplots(figsize=(10, 4))
-    train.plot(ax=ax4, label='Train')
-    test.plot(ax=ax4, label='Test')
-    fc.plot(ax=ax4, label='Pronóstico')
-    ax4.legend()
-    ax4.set_title('Pronóstico sobre la muestra de evaluación')
-    st.pyplot(fig4)
-
-    # --- PDF ---
-    if st.button("📥 Descargar Informe PDF"):
-        pdf = FPDF()
-        pdf.add_page()
-        pdf.set_font("Arial", "B", 16)
-        pdf.cell(0, 10, "Sistema Inteligente de Modelado del Precio de la Soya", ln=True, align='C')
-        pdf.set_font("Arial", "", 12)
-        pdf.cell(0, 10, "SolverTic SRL – División de Inteligencia Artificial y Modelado Predictivo", ln=True, align='C')
-        pdf.ln(10)
-        pdf.cell(0, 8, f"Fecha de generación: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
-        pdf.cell(0, 8, f"Modelos evaluados: {total_models}", ln=True)
-        pdf.cell(0, 8, f"Porcentaje de modelos válidos: {pct_passed:.1f}%", ln=True)
-        pdf.cell(0, 8, f"Mejor MAPE: {best_mape:.2f}%", ln=True)
-        pdf.cell(0, 8, f"Mejor AIC: {best_aic:.1f}", ln=True)
-        pdf.ln(10)
-
-        for fig in [fig1, fig2, fig3, fig4]:
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-            fig.savefig(tmp.name, dpi=150, bbox_inches="tight")
-            pdf.image(tmp.name, w=170)
-            pdf.ln(5)
-
-        tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
-        pdf.output(tmp_pdf.name)
-        with open(tmp_pdf.name, 'rb') as f:
-            st.download_button("💾 Descargar Informe PDF", f, file_name="Informe_Modelado_Soya.pdf", mime="application/pdf")
-
-    return {"summary": df, "best": best, "forecast": fc}
-
-# ==============================================================
-# INTERFAZ PRINCIPAL STREAMLIT
-# ==============================================================
-st.title("Sistema Inteligente de Modelado del Precio de la Soya")
-st.caption("Criterios: Normalidad, No autocorrelación, No heterocedasticidad y MAPE mínimo.")
+# ========================= INTERFAZ =========================
+st.title("🧠 Sistema Inteligente de Modelado del Precio de la Soya")
+st.caption("SolverTic SRL – División de Inteligencia Artificial y Modelado Predictivo")
 
 with st.sidebar:
-    st.header("📂 Datos")
-    uploaded = st.file_uploader("Sube el CSV de precios limpios de la soya", type=['csv'])
-    max_pq = st.slider("Máx p y q", 1, 5, 3)
-    seasonal_period = st.number_input("Periodo estacional (meses)", 4, 24, 12)
-    K_min, K_max = st.slider("Fourier K (SARIMAX)", 1, 6, (1, 2))
+    st.header("📂 Cargar y Configurar")
+    file = st.file_uploader("Sube tu archivo CSV de precios mensuales", type=['csv'])
+    pmax = st.slider("Máx p/q", 1, 5, 3)
+    periodo_estacional = st.number_input("Periodo estacional (meses)", 3, 24, 12)
+    test_size = st.slider("Meses para Test", 6, 36, 24)
+    fecha_inicio = st.date_input("Inicio de análisis", datetime.date(2010, 1, 1))
+    fecha_fin = st.date_input("Fin de análisis", datetime.date(2025, 5, 31))
     st.markdown("---")
-    st.caption("Desarrollado por SolverTic SRL – Ingeniería de Sistemas Inteligentes © 2025")
+    st.caption("Desarrollado por SolverTic SRL © 2025")
 
-if uploaded is not None:
-    df = pd.read_csv(uploaded)
+if file:
+    df = pd.read_csv(file)
     df.iloc[:, 0] = pd.to_datetime(df.iloc[:, 0])
     df = df.set_index(df.columns[0]).sort_index()
 
-    target_col = df.columns[0]
-    series = clean_pipeline(df[target_col])
-    series = ensure_monthly_series(series)
+    serie = limpiar_serie(df.iloc[:, 0])
+    serie = serie.loc[(serie.index >= str(fecha_inicio)) & (serie.index <= str(fecha_fin))]
 
-    train = series[:-24]
-    test = series[-24:]
+    train = serie[:-test_size]
+    test = serie[-test_size:]
 
-    st.write(f"**Observaciones:** {len(series)} | Train={len(train)} | Test={len(test)}")
-    out = grid_search_models(train, test, seasonal_period=int(seasonal_period), max_pq=int(max_pq), K_fourier=range(K_min, K_max + 1))
+    st.subheader("📈 Vista previa de datos")
+    st.line_chart(serie)
+    st.write(f"**Observaciones:** {len(serie)} | Train={len(train)} | Test={len(test)}")
+
+    df_res, best = buscar_modelos(train, test, pmax=pmax, qmax=pmax, periodo=periodo_estacional)
+
+    if df_res is not None:
+        st.success("✅ Modelado completado exitosamente")
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Mejor MAPE", f"{best['mape']:.2f}%")
+        c2.metric("AIC", f"{best['aic']:.1f}")
+        c3.metric("Modelos válidos", f"{df_res['valid'].sum()}/{len(df_res)}")
+
+        st.subheader("🏆 Top 10 modelos por MAPE")
+        st.dataframe(df_res.sort_values('mape').head(10)[['order', 'seasonal', 'mape', 'aic']])
+
+        # Gráfico AIC vs MAPE
+        fig, ax = plt.subplots()
+        ax.scatter(df_res['aic'], df_res['mape'], alpha=0.7, color='seagreen')
+        ax.set_xlabel('AIC')
+        ax.set_ylabel('MAPE (%)')
+        ax.set_title('Relación AIC vs MAPE')
+        st.pyplot(fig)
+
+        # Pronóstico
+        res_best = best['res']
+        fc = best['forecast']
+        fig2, ax2 = plt.subplots(figsize=(10, 4))
+        train.plot(ax=ax2, label='Train')
+        test.plot(ax=ax2, label='Test')
+        fc.plot(ax=ax2, label='Pronóstico', color='red')
+        ax2.legend()
+        st.pyplot(fig2)
+
+        # PDF
+        if st.button("📄 Generar Informe PDF"):
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_font("Arial", 'B', 16)
+            pdf.cell(0, 10, "Sistema Inteligente de Modelado del Precio de la Soya", ln=True, align='C')
+            pdf.set_font("Arial", '', 12)
+            pdf.cell(0, 10, "SolverTic SRL – División de Inteligencia Artificial y Modelado Predictivo", ln=True, align='C')
+            pdf.ln(10)
+            pdf.cell(0, 8, f"Fecha de generación: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", ln=True)
+            pdf.cell(0, 8, f"Periodo analizado: {fecha_inicio} a {fecha_fin}", ln=True)
+            pdf.cell(0, 8, f"Meses Test: {test_size}", ln=True)
+            pdf.cell(0, 8, f"p/q máximo: {pmax}", ln=True)
+            pdf.cell(0, 8, f"Periodo estacional: {periodo_estacional}", ln=True)
+            pdf.cell(0, 8, f"Mejor modelo: {best['order']} con MAPE={best['mape']:.2f}% y AIC={best['aic']:.1f}", ln=True)
+
+            tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+            fig2.savefig(tmp.name, dpi=150, bbox_inches="tight")
+            pdf.image(tmp.name, w=170)
+            tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+            pdf.output(tmp_pdf.name)
+
+            with open(tmp_pdf.name, 'rb') as f:
+                st.download_button("💾 Descargar Informe PDF", f, file_name="Informe_Modelado_Soya.pdf", mime="application/pdf")
 
 else:
-    st.warning("Por favor, carga un archivo CSV para comenzar.")
+    st.warning("Por favor, sube un archivo CSV con tu serie de precios mensuales.")
