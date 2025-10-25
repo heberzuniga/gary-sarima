@@ -213,6 +213,9 @@ if file:
             tmp_pdf = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
             pdf.output(tmp_pdf.name)
             with open(tmp_pdf.name, 'rb') as f:
-                st.download_button("💾 Descargar Informe PDF", f, file_name="Informe_Modelado_Soya.pdf", mime="application/pdf")
-else:
-    st.warning("Por favor, sube un archivo CSV con tu serie de precios mensuales.")
+                st.download_button("💾 Descargar Informe PDF", f,
+                                   file_name="Informe_Modelado_Soya.pdf",
+                                   mime="application/pdf")
+
+    else:
+        st.warning("Por favor, sube un archivo CSV con tu serie de precios mensuales.")
