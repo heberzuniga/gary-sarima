@@ -1,6 +1,6 @@
 # ==============================================================
 # 🧠 Sistema Inteligente de Modelado del Precio de la Soya – SolverTic SRL
-# Versión estable y corregida para Streamlit Cloud
+# Versión 4.1 con formato profesional (MAPE y AIC: dos enteros, dos decimales)
 # ==============================================================
 
 import streamlit as st
@@ -132,12 +132,15 @@ if file:
     if df_res is not None:
         st.success("✅ Modelado completado exitosamente")
         c1, c2, c3 = st.columns(3)
-        c1.metric("Mejor MAPE", f"{best['mape']:.2f}%")
-        c2.metric("AIC", f"{best['aic']:.1f}")
+        c1.metric("Mejor MAPE", f"{best['mape']:06.2f}%")
+        c2.metric("AIC", f"{best['aic']:06.2f}")
         c3.metric("Modelos válidos", f"{df_res['valid'].sum()}/{len(df_res)}")
 
         st.subheader("🏆 Top 10 modelos por MAPE")
-        st.dataframe(df_res.sort_values('mape').head(10)[['order','seasonal','fourier_K','mape','aic']])
+        tabla = df_res.sort_values('mape').head(10)[['order','seasonal','fourier_K','mape','aic']].copy()
+        tabla['mape'] = tabla['mape'].map(lambda x: f"{x:06.2f}")
+        tabla['aic'] = tabla['aic'].map(lambda x: f"{x:06.2f}")
+        st.dataframe(tabla)
 
         fig, ax = plt.subplots()
         ax.scatter(df_res['aic'], df_res['mape'], alpha=0.7, color='seagreen')
@@ -212,7 +215,7 @@ if file:
             pdf.cell(0, 8, f"Periodo estacional: {periodo_estacional}", ln=True)
             pdf.cell(0, 8, f"Fourier incluido: {include_fourier} (K={K_min}-{K_max})", ln=True)
             pdf.cell(0, 8, f"Winsorización: {winsor}", ln=True)
-            pdf.cell(0, 8, f"Mejor modelo: {best['order']} con MAPE={best['mape']:.2f}% y AIC={best['aic']:.1f}", ln=True)
+            pdf.cell(0, 8, f"Mejor modelo: {best['order']} con MAPE={best['mape']:06.2f}% y AIC={best['aic']:06.2f}", ln=True)
             pdf.ln(8)
             pdf.cell(0, 8, "📈 Diagnóstico de los Residuales del Mejor Modelo (Estilo EViews)", ln=True)
             for i, row in df_norm.iterrows():
